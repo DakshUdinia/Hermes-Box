@@ -345,23 +345,6 @@ public static class HermesNative
                 }
                 finally { Marshal.FreeHGlobal(jbuf); }
 
-                // Enforce Win32 UIPI / Desktop isolation (JobObjectBasicUIRestrictions = 4):
-                // Blocks HWND shatter/enumeration (0x01), SystemParameters (0x08), DisplaySettings (0x10),
-                // GlobalAtoms (0x20), and ExitWindows (0x80) while preserving normal Ctrl+C / Ctrl+V UX
-                // unless HERMESBOX_ISOLATE_CLIPBOARD=1 is set (which adds Read/WriteClipboard 0x02|0x04).
-                var ui = new JOBOBJECT_BASIC_UI_RESTRICTIONS();
-                ui.UIRestrictionsClass = 0x01u | 0x08u | 0x10u | 0x20u | 0x80u;
-                if (Environment.GetEnvironmentVariable("HERMESBOX_ISOLATE_CLIPBOARD") == "1")
-                    ui.UIRestrictionsClass |= (0x02u | 0x04u);
-                int uisize = Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS));
-                IntPtr uibuf = Marshal.AllocHGlobal(uisize);
-                try
-                {
-                    Marshal.StructureToPtr(ui, uibuf, false);
-                    SetInformationJobObject(job, 4, uibuf, (uint)uisize);
-                }
-                finally { Marshal.FreeHGlobal(uibuf); }
-
                 if (!AssignProcessToJobObject(job, pi.hProcess))
                     throw new Exception("AssignProcessToJobObject: " + Marshal.GetLastWin32Error());
             }
@@ -717,15 +700,16 @@ function Get-BoxDirs {
         Select-Object -Unique
 }
 
-function Set-ControllerInitState([bool]$enableUblock, [bool]$enableVpn, [string]$modeLabel, [string]$capLabel) {
+function Set-ControllerInitState([bool]$enableUblock, [bool]$enableVpn, [string]$modeLabel, [string]$capLabel, [string[]]$extraUrls = @()) {
     $ctrlDir = Join-Path $script:SharedExtensions 'controller'
     if (Test-Path -LiteralPath $ctrlDir) {
         $initFile = Join-Path $ctrlDir 'init_state.json'
         $stateObj = @{
-            ublock = $enableUblock
-            vpn    = $enableVpn
-            mode   = $modeLabel
-            cap    = $capLabel
+            ublock      = $enableUblock
+            vpn         = $enableVpn
+            mode        = $modeLabel
+            cap         = $capLabel
+            startupUrls = @($extraUrls)
         } | ConvertTo-Json -Compress
         try {
             Set-Content -LiteralPath $initFile -Value $stateObj -Encoding UTF8 -ErrorAction SilentlyContinue
@@ -970,7 +954,13 @@ function Get-BrowserArgs([string]$root, [string]$page, [string[]]$pageList, [str
     if ($page) { $allPages += $page }
     if ($pageList -and $pageList.Count -gt 0) { $allPages += $pageList }
     if ($allPages.Count -ge 1) {
-        # Startup URL(s) are pre-seeded in Preferences (session.startup_urls) so long URLs never hit the 1024-char RPC limit.
+        $joinedLen = ($allPages -join ' ').Length
+        if ($joinedLen -le 135) {
+            $a += $allPages
+        }
+        elseif ($allPages.Count -eq 1 -and $allPages[0].Length -le 160) {
+            $a += $allPages[0]
+        }
     }
     else {
         $a += 'chrome://newtab'
@@ -1067,7 +1057,8 @@ function Invoke-Run {
     $box = New-Box $CapMb $(if ($cred) { $cred.User } else { $null }) $null $allUrls
     $mode = if ($cred) { "account ($($cred.User))" } else { 'token (limited isolation)' }
     $preset = if ($LowRam) { 'low-ram (4 renderers, 256 MB V8)' } else { 'standard (strict site-isolation, GPU zero-copy, 128 MB media cache)' }
-    Set-ControllerInitState (-not [bool]$NoUblock) (-not [bool]$NoVpn) $mode "$($box.CapMb) MB"
+    $overflowUrls = if (($allUrls -join ' ').Length -gt 135) { @($allUrls) } else { @() }
+    Set-ControllerInitState (-not [bool]$NoUblock) (-not [bool]$NoVpn) $mode "$($box.CapMb) MB" $overflowUrls
     Write-Host 'Hermes Box'
     Write-Host "  id      : $($box.Id)"
     Write-Host "  root    : $($box.Root)"

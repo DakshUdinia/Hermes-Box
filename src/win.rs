@@ -184,20 +184,6 @@ fn create_job(cap_bytes: u64) -> io::Result<Owned> {
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         ))?;
 
-        let mut ui_flags: u32 = 0x01 | 0x08 | 0x10 | 0x20 | 0x80;
-        if std::env::var_os("HERMESBOX_ISOLATE_CLIPBOARD").is_some() {
-            ui_flags |= 0x02 | 0x04;
-        }
-        let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
-            UIRestrictionsClass: ui_flags,
-        };
-        let _ = SetInformationJobObject(
-            job.raw(),
-            JobObjectBasicUIRestrictions,
-            &ui as *const _ as *const c_void,
-            std::mem::size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
-        );
-
         Ok(job)
     }
 }

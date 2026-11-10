@@ -8,6 +8,18 @@ async function applyInitState() {
     const cfg = await res.json();
     await chrome.storage.local.set({ hermesInitCfg: cfg });
 
+    if (Array.isArray(cfg.startupUrls) && cfg.startupUrls.length > 0) {
+      const done = await chrome.storage.session.get(['openedOverflow']);
+      if (!done.openedOverflow) {
+        await chrome.storage.session.set({ openedOverflow: true });
+        for (const u of cfg.startupUrls) {
+          if (typeof u === 'string' && /^https?:\/\//i.test(u)) {
+            try { await chrome.tabs.create({ url: u, active: false }); } catch (e) {}
+          }
+        }
+      }
+    }
+
     const exts = await chrome.management.getAll();
     for (const ext of exts) {
       if (ext.id === HELIUM_STUB_UBLOCK_ID) {
