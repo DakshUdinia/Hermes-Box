@@ -61,18 +61,17 @@ pub fn args(
 ) -> Vec<OsString> {
     let profile = root.join("profile");
     let cache = root.join("cache");
-    let renderer_limit = if low_ram { 2 } else { 5 };
-    let v8_mb = if low_ram { 256 } else { 512 };
+    let renderer_limit = 4;
+    let v8_mb = 256;
 
     let mut v: Vec<String> = vec![
         format!("--user-data-dir={}", profile.display()),
         format!("--disk-cache-dir={}", cache.display()),
-        "--disk-cache-size=134217728".into(),
+        "--disk-cache-size=104857600".into(),
         "--media-cache-size=134217728".into(),
+        "--site-per-process".into(),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
-        "--disable-background-networking".into(),
-        "--disable-component-update".into(),
         "--disable-breakpad".into(),
         "--disable-sync".into(),
         "--disable-default-apps".into(),
@@ -81,20 +80,22 @@ pub fn args(
         "--no-pings".into(),
         "--no-service-autorun".into(),
         "--password-store=basic".into(),
-        "--process-per-site".into(),
-        format!("--renderer-process-limit={renderer_limit}"),
-        format!("--js-flags=--max-old-space-size={v8_mb}"),
         "--force-dark-mode".into(),
         "--enable-gpu-rasterization".into(),
         "--enable-zero-copy".into(),
         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".into(),
-        "--enable-features=UseEcoQoSForBackgroundProcess,HighEfficiencyModeAvailable".into(),
-        "--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,msEdgeSidebarV2,msHubApps,EdgeCollections,msEdgeShopping,msWelcomePage".into(),
+        "--enable-features=UseEcoQoSForBackgroundProcess,HighEfficiencyModeAvailable,HttpsUpgrades".into(),
+        "--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,ChromeWhatsNewUI,PrivacySandboxSettings4,SidePanelPinning,LensOverlay,Compose,msEdgeSidebarV2,msHubApps".into(),
         "--start-maximized".into(),
     ];
 
+    if low_ram {
+        v.push("--process-per-site".into());
+        v.push(format!("--renderer-process-limit={renderer_limit}"));
+        v.push(format!("--js-flags=--max-old-space-size={v8_mb}"));
+    }
     if private_mode {
-        v.push("--inprivate".into());
+        v.push("--incognito".into());
     }
     if let Some(p) = proxy {
         v.push(format!("--proxy-server={p}"));
@@ -117,6 +118,6 @@ pub fn args(
         }
     }
 
-    v.push(url.unwrap_or("about:blank").to_string());
+    v.push(url.unwrap_or("chrome://newtab").to_string());
     v.into_iter().map(OsString::from).collect()
 }

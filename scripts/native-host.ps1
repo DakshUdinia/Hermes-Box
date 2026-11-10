@@ -23,8 +23,19 @@ try {
     $urls = @()
     if ($payload.urls) {
         foreach ($u in $payload.urls) {
-            if ($u -and ($u -match '^https?://|^chrome://newtab')) {
-                $urls += [string]$u
+            if (-not $u) { continue }
+            $raw = ([string]$u).Trim()
+            if ($raw -eq 'chrome://newtab') {
+                $urls += 'chrome://newtab'
+                continue
+            }
+            $parsed = $null
+            if ([Uri]::TryCreate($raw, [UriKind]::Absolute, [ref]$parsed) -and ($parsed.Scheme -in @('http', 'https'))) {
+                # AbsoluteUri RFC-3986 percent-encodes quotes, whitespace, and control chars so argument injection is impossible.
+                $safeUrl = ($parsed.AbsoluteUri -replace '"', '%22' -replace '\s', '%20' -replace ',', '%2C')
+                if ($safeUrl -and ($safeUrl -notmatch '["\s\r\n]')) {
+                    $urls += $safeUrl
+                }
             }
         }
     }

@@ -146,6 +146,12 @@ public static class HermesNative
         public UIntPtr PeakJobMemoryUsed;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_BASIC_UI_RESTRICTIONS
+    {
+        public uint UIRestrictionsClass;
+    }
+
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
     [DllImport("advapi32.dll", SetLastError = true)]
     static extern bool OpenProcessToken(IntPtr h, uint access, out IntPtr token);
@@ -269,15 +275,30 @@ public static class HermesNative
         return cmd;
     }
 
+    static readonly string[] SafeEnvKeys = new string[]
+    {
+        "SystemRoot", "windir", "ComSpec", "SystemDrive",
+        "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+        "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
+        "ProgramData", "ALLUSERSPROFILE", "PUBLIC", "PATHEXT", "OS",
+        "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL",
+        "PROCESSOR_REVISION", "NUMBER_OF_PROCESSORS", "COMPUTERNAME"
+    };
+
     static IntPtr BuildEnv(string[] pairs)
     {
+        // Clean-room environment allowlist: never leak host API keys, tokens, or personal PATH into the sandbox.
         var dict = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (DictionaryEntry e in Environment.GetEnvironmentVariables())
+        foreach (string key in SafeEnvKeys)
         {
-            string k = (string)e.Key;
-            if (k.Length > 0 && k[0] == '=') continue;
-            dict[k] = (string)e.Value;
+            string val = Environment.GetEnvironmentVariable(key);
+            if (!string.IsNullOrEmpty(val)) dict[key] = val;
         }
+        string sysRoot = Environment.GetEnvironmentVariable("SystemRoot");
+        if (string.IsNullOrEmpty(sysRoot)) sysRoot = @"C:\Windows";
+        dict["PATH"] = sysRoot + @"\System32;" + sysRoot + ";" + sysRoot + @"\System32\Wbem;" + sysRoot + @"\System32\WindowsPowerShell\v1.0";
+        dict["USERNAME"] = "HermesBox";
+
         foreach (var p in pairs)
         {
             int i = p.IndexOf('=');
@@ -323,6 +344,23 @@ public static class HermesNative
                         throw new Exception("SetInformationJobObject: " + Marshal.GetLastWin32Error());
                 }
                 finally { Marshal.FreeHGlobal(jbuf); }
+
+                // Enforce Win32 UIPI / Desktop isolation (JobObjectBasicUIRestrictions = 4):
+                // Blocks HWND shatter/enumeration (0x01), SystemParameters (0x08), DisplaySettings (0x10),
+                // GlobalAtoms (0x20), and ExitWindows (0x80) while preserving normal Ctrl+C / Ctrl+V UX
+                // unless HERMESBOX_ISOLATE_CLIPBOARD=1 is set (which adds Read/WriteClipboard 0x02|0x04).
+                var ui = new JOBOBJECT_BASIC_UI_RESTRICTIONS();
+                ui.UIRestrictionsClass = 0x01u | 0x08u | 0x10u | 0x20u | 0x80u;
+                if (Environment.GetEnvironmentVariable("HERMESBOX_ISOLATE_CLIPBOARD") == "1")
+                    ui.UIRestrictionsClass |= (0x02u | 0x04u);
+                int uisize = Marshal.SizeOf(typeof(JOBOBJECT_BASIC_UI_RESTRICTIONS));
+                IntPtr uibuf = Marshal.AllocHGlobal(uisize);
+                try
+                {
+                    Marshal.StructureToPtr(ui, uibuf, false);
+                    SetInformationJobObject(job, 4, uibuf, (uint)uisize);
+                }
+                finally { Marshal.FreeHGlobal(uibuf); }
 
                 if (!AssignProcessToJobObject(job, pi.hProcess))
                     throw new Exception("AssignProcessToJobObject: " + Marshal.GetLastWin32Error());
@@ -534,7 +572,16 @@ function Sync-PerUserBrowser([string]$srcExe, [string]$engineTag = 'Chrome') {
                 New-Item -ItemType HardLink -Path $target -Value $_.FullName -Force | Out-Null
             }
         }
-        $p = Start-Process -FilePath 'icacls.exe' -ArgumentList @($dstRoot, '/grant', '*S-1-5-32-545:(OI)(CI)(RX)', '/grant', '*S-1-5-32-545:(RX)', '/T', '/Q') -Wait -PassThru -WindowStyle Hidden
+        $callerId = "$env:USERDOMAIN\$env:USERNAME"
+        $p = Start-Process -FilePath 'icacls.exe' -ArgumentList @(
+            $dstRoot, '/inheritance:r',
+            '/grant', '*S-1-5-18:(OI)(CI)(F)',
+            '/grant', '*S-1-5-32-544:(OI)(CI)(F)',
+            '/grant', "${callerId}:(OI)(CI)(F)",
+            '/grant', '*S-1-5-32-545:(OI)(CI)(RX)',
+            '/grant', '*S-1-5-32-545:(RX)',
+            '/T', '/Q'
+        ) -Wait -PassThru -WindowStyle Hidden
     }
     return $dstExe
 }
@@ -597,19 +644,65 @@ function Set-LowIntegrity([string]$path) {
     if ($p.ExitCode -ne 0) { throw "icacls failed to label $path (exit $($p.ExitCode))" }
 }
 
-function Grant-UsersModify([string]$path) {
-    $p = Start-Process -FilePath 'icacls.exe' -ArgumentList @($path, '/grant', '*S-1-5-32-545:(OI)(CI)M', '/T', '/Q') -Wait -PassThru -WindowStyle Hidden
-    if ($p.ExitCode -ne 0) { throw "icacls failed to grant Users on $path (exit $($p.ExitCode))" }
+function Set-BoxAcl([string]$root, [string]$account) {
+    # Fast in-process .NET ACL setup on empty $root BEFORE creating subdirectories (~300 ms vs 2,370 ms for 3x icacls.exe).
+    # Grants Modify strictly to the dedicated sandbox account (not all local Users) + caller + SYSTEM + Administrators.
+    $acl = Get-Acl -LiteralPath $root
+    $acl.SetAccessRuleProtection($true, $false)
+    $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    $none    = [System.Security.AccessControl.PropagationFlags]::None
+
+    foreach ($sidStr in @('S-1-5-18', 'S-1-5-32-544')) {
+        $sid = New-Object System.Security.Principal.SecurityIdentifier($sidStr)
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, $none, 'Allow')))
+    }
+    $meSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($meSid, 'FullControl', $inherit, $none, 'Allow')))
+
+    if ($account) {
+        try {
+            $sbSid = (New-Object System.Security.Principal.NTAccount($account)).Translate([System.Security.Principal.SecurityIdentifier])
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sbSid, 'Modify', $inherit, $none, 'Allow')))
+        }
+        catch {
+            $usersSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($usersSid, 'Modify', $inherit, $none, 'Allow')))
+        }
+    }
+    Set-Acl -LiteralPath $root -AclObject $acl
+    if ($env:HERMES_LOW -eq '1') {
+        Set-LowIntegrity $root
+    }
 }
 
-function Grant-AccountModify([string]$path, [string]$account) {
-    # Root only: (OI)(CI) inheritance covers everything created later. Files the
-    # sandbox account already owns do not grant us WRITE_DAC, so a recursive
-    # /grant would fail on them even though access is already correct.
-    $p = Start-Process -FilePath 'icacls.exe' -ArgumentList @($path, '/grant', "${account}:(OI)(CI)M", '/Q') -Wait -PassThru -WindowStyle Hidden
-    if ($p.ExitCode -ne 0) {
-        Write-Verbose "icacls could not add an ACE for $account on $path (exit $($p.ExitCode)); inherited access still applies"
+function Save-QuarantineDownloads([string]$boxRoot, [string]$destDir) {
+    # Safe quarantine extraction: rejects NTFS junctions/symlinks (preventing ReparsePoint host exfiltration)
+    # and stamps Mark-of-the-Web (ZoneId=3) on saved files.
+    $boxDl = Join-Path $boxRoot 'home\Downloads'
+    if (-not (Test-Path -LiteralPath $boxDl)) { return 0 }
+    $dlRootItem = Get-Item -LiteralPath $boxDl -Force -ErrorAction SilentlyContinue
+    if (-not $dlRootItem -or (($dlRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { return 0 }
+
+    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    $savedCount = 0
+    $files = @(Get-ChildItem -LiteralPath $boxDl -File -Force -ErrorAction SilentlyContinue |
+        Where-Object {
+            (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) -and
+            ($_.Extension -notin @('.crdownload', '.tmp', '.part'))
+        })
+    foreach ($f in $files) {
+        $safeLeaf = [IO.Path]::GetFileName($f.Name)
+        if (-not $safeLeaf) { continue }
+        $dstFile = Join-Path $destDir $safeLeaf
+        Copy-Item -LiteralPath $f.FullName -Destination $dstFile -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $dstFile -PathType Leaf) {
+            try {
+                Set-Content -LiteralPath $dstFile -Stream 'Zone.Identifier' -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII -ErrorAction SilentlyContinue
+            } catch { }
+            $savedCount++
+        }
     }
+    return $savedCount
 }
 
 function Ensure-SharedBase {
@@ -686,7 +779,22 @@ function Initialize-BrowserProfile([string]$root, [string]$downloadsDir, [string
             default_content_setting_values = @{
                 notifications = 2
                 geolocation = 2
+                clipboard = 2
+                automatic_downloads = 2
+                popups = 2
+                sensors = 2
+                usb_guard = 2
+                serial_guard = 2
+                hid_guard = 2
+                bluetooth_guard = 2
+                local_fonts = 2
             }
+        }
+        safebrowsing = @{
+            enabled = $true
+        }
+        webrtc = @{
+            ip_handling_policy = 'disable_non_proxied_udp'
         }
         autofill = @{
             credit_card_enabled = $false
@@ -741,7 +849,7 @@ function Initialize-BrowserProfile([string]$root, [string]$downloadsDir, [string
         background_mode = @{ enabled = $false }
         hardware_acceleration_mode = @{ enabled = $true }
         performance_tuning = @{
-            high_efficiency_mode = @{ state = 2; time_before_discard_in_minutes = 5 }
+            high_efficiency_mode = @{ state = 2; time_before_discard_in_minutes = 10 }
         }
     } | ConvertTo-Json -Depth 5 -Compress
     Set-Content -LiteralPath (Join-Path $profDir 'Local State') -Value $localState -Encoding UTF8
@@ -756,6 +864,8 @@ function New-Box([int]$cap, [string]$account, [string]$downloadsDir, [string[]]$
     else {
         $root = Join-Path $script:BoxesDir $id
     }
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    Set-BoxAcl $root $account
     foreach ($sub in @('profile', 'cache', 'temp', 'home', 'home/Downloads', 'home/AppData/Local', 'home/AppData/Roaming')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $root $sub) | Out-Null
     }
@@ -767,8 +877,6 @@ function New-Box([int]$cap, [string]$account, [string]$downloadsDir, [string[]]$
         "pid=$PID"
     ) -join "`n"
     Set-Content -LiteralPath (Join-Path $root 'meta.txt') -Value $meta -Encoding ASCII
-    Grant-UsersModify $root
-    Set-LowIntegrity $root
     [pscustomobject]@{ Id = $id; Root = $root; CapMb = $cap }
 }
 
@@ -813,19 +921,20 @@ function Get-BrowserArgs([string]$root, [string]$page, [string[]]$pageList, [str
     if ($env:HERMESBOX_EXTRA) { $extra = @(($env:HERMESBOX_EXTRA -split '\s+') + $extra) }
     $profile = Join-Path $root 'profile'
     $cache = Join-Path $root 'cache'
-    $rendererLimit = if ($isLowRam) { 2 } else { 5 }
-    $v8Mb = if ($isLowRam) { 256 } else { 512 }
+    $rendererLimit = 4
+    $v8Mb = 256
     $isEdge = ($exePath -match 'msedge\.exe$')
     $disFeatures = if ($isEdge) {
-        'Translate,MediaRouter,OptimizationHints,msEdgeSidebarV2,msHubApps'
+        'Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,msEdgeSidebarV2,msHubApps'
     } else {
-        'Translate,MediaRouter,OptimizationHints'
+        'Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,ChromeWhatsNewUI,PrivacySandboxSettings4,SidePanelPinning,LensOverlay,Compose'
     }
     $a = @(
         "--user-data-dir=$profile"
         "--disk-cache-dir=$cache"
-        '--disk-cache-size=134217728'
+        '--disk-cache-size=104857600'
         '--media-cache-size=134217728'
+        '--site-per-process'
         '--no-first-run'
         '--no-default-browser-check'
         '--disable-breakpad'
@@ -840,7 +949,7 @@ function Get-BrowserArgs([string]$root, [string]$page, [string[]]$pageList, [str
         '--enable-gpu-rasterization'
         '--enable-zero-copy'
         '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'
-        '--enable-features=UseEcoQoSForBackgroundProcess,HighEfficiencyModeAvailable'
+        '--enable-features=UseEcoQoSForBackgroundProcess,HighEfficiencyModeAvailable,HttpsUpgrades'
         "--disable-features=$disFeatures"
     )
     if ($isLowRam) {
@@ -865,10 +974,11 @@ function Get-BrowserArgs([string]$root, [string]$page, [string[]]$pageList, [str
     $allPages = @()
     if ($page) { $allPages += $page }
     if ($pageList -and $pageList.Count -gt 0) { $allPages += $pageList }
-    if ($allPages.Count -gt 0) {
-        $joinedLen = ($allPages -join ' ').Length
-        if ($joinedLen -le 180) { $a += $allPages }
-        else { $a += $allPages[0] }
+    if ($allPages.Count -eq 1 -and $allPages[0].Length -le 220) {
+        $a += $allPages[0]
+    }
+    elseif ($allPages.Count -gt 1) {
+        # Multiple tabs are already pre-seeded via Preferences (session.startup_urls) so none get dropped or hit the 1024-char RPC limit.
     }
     else {
         $a += 'chrome://newtab'
@@ -880,7 +990,6 @@ function Start-Boxed([string]$exe, [string[]]$argList, [string]$root, [string[]]
     Ensure-Native
     $capBytes = [int64]$capMb * 1024L * 1024L
     if ($cred) {
-        Grant-AccountModify $root $cred.User
         return [HermesNative]::StartAsUser($cred.User, $cred.Password, $exe, $argList, $root, $env, $capBytes)
     }
     return [HermesNative]::Start($exe, $argList, $root, $env, $capBytes)
@@ -965,7 +1074,7 @@ function Invoke-Run {
     }
     $box = New-Box $CapMb $(if ($cred) { $cred.User } else { $null }) $null $allUrls
     $mode = if ($cred) { "account ($($cred.User))" } else { 'token (limited isolation)' }
-    $preset = if ($LowRam) { 'low-ram (2 renderers, 256 MB V8)' } else { 'standard (5 renderers, 512 MB V8, 128 MB media cache)' }
+    $preset = if ($LowRam) { 'low-ram (4 renderers, 256 MB V8)' } else { 'standard (strict site-isolation, GPU zero-copy, 128 MB media cache)' }
     Set-ControllerInitState (-not [bool]$NoUblock) (-not [bool]$NoVpn) $mode "$($box.CapMb) MB"
     Write-Host 'Hermes Box'
     Write-Host "  id      : $($box.Id)"
@@ -998,17 +1107,9 @@ function Invoke-Run {
     }
 
     if ($dlDir) {
-        $boxDl = Join-Path $box.Root 'home\Downloads'
-        if (Test-Path -LiteralPath $boxDl) {
-            $items = @(Get-ChildItem -LiteralPath $boxDl -Force -ErrorAction SilentlyContinue |
-                Where-Object { $_.Extension -notin @('.crdownload', '.tmp') })
-            foreach ($item in $items) {
-                $dest = Join-Path $dlDir $item.Name
-                Copy-Item -LiteralPath $item.FullName -Destination $dest -Recurse -Force -ErrorAction SilentlyContinue
-            }
-            if ($items.Count -gt 0) {
-                Write-Host "  saved   : $($items.Count) file(s) -> $dlDir"
-            }
+        $savedN = Save-QuarantineDownloads $box.Root $dlDir
+        if ($savedN -gt 0) {
+            Write-Host "  saved   : $savedN file(s) -> $dlDir (Mark-of-the-Web applied)"
         }
     }
 
@@ -1044,7 +1145,16 @@ function Invoke-Wipe {
         $boxes = @(Get-BoxDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory -ErrorAction SilentlyContinue })
         if ($boxes.Count -eq 0) { Write-Host 'wiped 0 box(es)'; return }
         $ok = 0
-        foreach ($b in $boxes) { if (Remove-Box $b.FullName) { $ok++ } }
+        foreach ($b in $boxes) {
+            $meta = Read-BoxMeta $b.FullName
+            if ($meta['keep'] -eq '1') { continue }
+            $ownerPid = 0
+            [void][int]::TryParse([string]$meta['pid'], [ref]$ownerPid)
+            if ($b.Name -notlike 'trash-*' -and $ownerPid -gt 0 -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) {
+                continue
+            }
+            if (Remove-Box $b.FullName) { $ok++ }
+        }
         Write-Host "wiped $ok box(es)"
         return
     }
@@ -1191,7 +1301,7 @@ function Invoke-Gui {
     $hdr.Controls.Add($lblTitle)
 
     $lblSub = New-Object System.Windows.Forms.Label
-    $lblSub.Text = 'Zero-Config Disposable Browser  |  Auto-Optimizing RAM & Shared Helium Engine'
+    $lblSub.Text = 'SquareX-Style Isolated Browser  |  Zero-Persistence Chrome Sandbox'
     $lblSub.Font = $fontSub
     $lblSub.ForeColor = $fgMuted
     $lblSub.SetBounds(18, 33, 410, 18)
@@ -1259,7 +1369,7 @@ function Invoke-Gui {
     $hero.Controls.Add($chkVpn)
 
     $chkAuto = New-Object System.Windows.Forms.CheckBox
-    $chkAuto.Text = 'Auto-Scale RAM (1-2.5 GB)'
+    $chkAuto.Text = 'Auto-Scale RAM (2.5-4 GB)'
     $chkAuto.Font = $fontNorm
     $chkAuto.ForeColor = $fgMuted
     $chkAuto.Checked = $true
@@ -1290,7 +1400,7 @@ function Invoke-Gui {
     $tel.Controls.Add($lblStatus)
 
     $lblRam = New-Object System.Windows.Forms.Label
-    $lblRam.Text = 'Commit: 0 MB / Auto (1024-2560 MB)   |   Working Set: 0 MB   |   Processes: 0'
+    $lblRam.Text = 'Commit: 0 MB / Auto (2560-4096 MB)   |   Working Set: 0 MB   |   Processes: 0'
     $lblRam.Font = $fontSub
     $lblRam.ForeColor = $fgMuted
     $lblRam.SetBounds(16, 34, 620, 20)
@@ -1363,10 +1473,10 @@ function Invoke-Gui {
     $cmbPreset.ForeColor = $fgText
     $cmbPreset.DropDownStyle = 'DropDownList'
     $cmbPreset.FlatStyle = 'Flat'
-    [void]$cmbPreset.Items.Add('Auto-Optimize (Dynamic 1024 - 2560 MB)')
-    [void]$cmbPreset.Items.Add('Standard Fixed - 1536 MB Cap (5 Renderers)')
-    [void]$cmbPreset.Items.Add('Ultra Low-RAM - 900 MB Cap (2 Renderers)')
-    [void]$cmbPreset.Items.Add('Heavy Multi-Tab - 2048 MB Cap (5 Renderers)')
+    [void]$cmbPreset.Items.Add('Auto-Optimize (Dynamic 2560 - 4096 MB)')
+    [void]$cmbPreset.Items.Add('Standard Fixed - 2560 MB Ceiling')
+    [void]$cmbPreset.Items.Add('Ultra Low-RAM - 1536 MB Ceiling (4 Renderers)')
+    [void]$cmbPreset.Items.Add('Heavy Multi-Tab - 3584 MB Ceiling')
     $cmbPreset.SelectedIndex = 0
     $cmbPreset.SetBounds(16, 114, 270, 25)
     $adv.Controls.Add($cmbPreset)
@@ -1510,10 +1620,10 @@ function Invoke-Gui {
         $state.AutoScale = $chkAuto.Checked
         if (-not $state.AutoScale) {
             $newCap = switch ($cmbPreset.SelectedIndex) {
-                1 { 1536 }
-                2 { 900 }
-                3 { 2048 }
-                default { 1536 }
+                1 { 2560 }
+                2 { 1536 }
+                3 { 3584 }
+                default { 2560 }
             }
             $state.CapMb = $newCap
             if ($state.Child) {
@@ -1533,16 +1643,9 @@ function Invoke-Gui {
             $b = $state.Box
             $state.Box = $null
             if ($state.DlDir) {
-                $boxDl = Join-Path $b.Root 'home\Downloads'
-                if (Test-Path -LiteralPath $boxDl) {
-                    $items = @(Get-ChildItem -LiteralPath $boxDl -Force -ErrorAction SilentlyContinue |
-                        Where-Object { $_.Extension -notin @('.crdownload', '.tmp') })
-                    foreach ($item in $items) {
-                        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $state.DlDir $item.Name) -Recurse -Force -ErrorAction SilentlyContinue
-                    }
-                    if ($items.Count -gt 0) {
-                        & $appendLog "Saved $($items.Count) downloaded file(s) -> $($state.DlDir)"
-                    }
+                $savedN = Save-QuarantineDownloads $b.Root $state.DlDir
+                if ($savedN -gt 0) {
+                    & $appendLog "Saved $savedN downloaded file(s) -> $($state.DlDir) (Mark-of-the-Web applied)"
                 }
             }
             if ($state.Keep) {
@@ -1556,7 +1659,7 @@ function Invoke-Gui {
         }
         $lblStatus.Text = 'STATUS: IDLE - Click Launch above (no URL required; control tabs & VPN inside browser)'
         $lblStatus.ForeColor = $accGreen
-        $lblRam.Text = 'Commit: 0 MB / Auto (1024-2560 MB)   |   Working Set: 0 MB   |   Processes: 0'
+        $lblRam.Text = 'Commit: 0 MB / Auto (2560-4096 MB)   |   Working Set: 0 MB   |   Processes: 0'
         $barFill.Width = 0
         $btnLaunch.Enabled = $true
         $btnNuke.Enabled = $false

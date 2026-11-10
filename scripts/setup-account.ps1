@@ -83,7 +83,26 @@ if ($Remove) {
     return
 }
 
-$password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 28 | ForEach-Object { [char]$_ })
+# Cryptographically random 28-char password guaranteed to satisfy Windows complexity policies
+$lowers = 'abcdefghijkmnopqrstuvwxyz'
+$uppers = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+$digits = '23456789'
+$syms   = '!@#$%&*+-=?'
+$allChars = ($lowers + $uppers + $digits + $syms).ToCharArray()
+$rngBytes = New-Object byte[] 32
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($rngBytes)
+$rng.Dispose()
+$pwChars = @(
+    $lowers[$rngBytes[0] % $lowers.Length],
+    $uppers[$rngBytes[1] % $uppers.Length],
+    $digits[$rngBytes[2] % $digits.Length],
+    $syms[$rngBytes[3] % $syms.Length]
+)
+for ($i = 4; $i -lt 28; $i++) {
+    $pwChars += $allChars[$rngBytes[$i] % $allChars.Length]
+}
+$password = -join $pwChars
 $secure = ConvertTo-SecureString $password -AsPlainText -Force
 
 $existing = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
@@ -150,6 +169,18 @@ foreach ($drv in @(Get-SecondaryFixedDrives)) {
     icacls.exe $drv /deny "${UserName}:(OI)(CI)(F)" /Q 2>$null | Out-Null
     Log "locked secondary drive $drv against $UserName (exit $LASTEXITCODE)"
 }
+
+# Lock down C:\ProgramData\HermesBox so the sandbox account can NEVER modify shared extensions or engine binaries.
+$sharedRoot = Join-Path $env:ProgramData 'HermesBox'
+$sharedExt  = Join-Path $sharedRoot 'extensions'
+$sharedBoxes = Join-Path $sharedRoot 'boxes'
+New-Item -ItemType Directory -Force -Path $sharedRoot, $sharedExt, $sharedBoxes | Out-Null
+$callerAccount = "$env:USERDOMAIN\$env:USERNAME"
+icacls.exe $sharedRoot /inheritance:r /remove:g $UserName /grant '*S-1-5-18:(OI)(CI)(F)' /grant '*S-1-5-32-544:(OI)(CI)(F)' /grant "${callerAccount}:(OI)(CI)(F)" /grant '*S-1-5-32-545:(RX)' /Q 2>$null | Out-Null
+icacls.exe $sharedExt /inheritance:r /remove:g $UserName /grant '*S-1-5-18:(OI)(CI)(F)' /grant '*S-1-5-32-544:(OI)(CI)(F)' /grant "${callerAccount}:(OI)(CI)(F)" /grant '*S-1-5-32-545:(OI)(CI)(RX)' /Q 2>$null | Out-Null
+icacls.exe "$sharedExt\*" /reset /T /Q 2>$null | Out-Null
+icacls.exe $sharedBoxes /inheritance:r /remove:g $UserName /grant '*S-1-5-18:(OI)(CI)(F)' /grant '*S-1-5-32-544:(OI)(CI)(F)' /grant "${callerAccount}:(OI)(CI)(F)" /grant '*S-1-5-32-545:(RX)' /Q 2>$null | Out-Null
+Log "hardened ACLs on $sharedRoot (shared extensions locked read-only against $UserName)"
 
 $encrypted = ConvertFrom-SecureString $secure
 $payload = @{ user = $UserName; password = $encrypted } | ConvertTo-Json -Compress

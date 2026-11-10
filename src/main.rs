@@ -18,7 +18,7 @@ use boxdir::Sandbox;
 
 type R = Result<(), Box<dyn Error>>;
 
-const DEFAULT_CAP_MB: u64 = 1536;
+const DEFAULT_CAP_MB: u64 = 3072;
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();

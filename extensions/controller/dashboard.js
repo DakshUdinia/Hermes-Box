@@ -7,7 +7,7 @@ let vpnExt = null;
 async function refreshExtensions() {
   const exts = await chrome.management.getAll();
   ubExt = exts.find(e => e.id === UBLOCK_ID);
-  vpnExt = exts.find(e => e.id === VPN_ID) || exts.find(e => e.name.toLowerCase().includes('1click') || e.name.toLowerCase().includes('vpn'));
+  vpnExt = exts.find(e => e.id === VPN_ID);
 
   const ubStatus = document.getElementById('ubStatus');
   const ubToggle = document.getElementById('ubToggle');

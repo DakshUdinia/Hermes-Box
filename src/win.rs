@@ -22,8 +22,9 @@ use windows_sys::Win32::Security::{
     TOKEN_QUERY, TokenIntegrityLevel, WinBuiltinAdministratorsSid, WinLowLabelSid,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
+    JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_BASIC_UI_RESTRICTIONS,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_MEMORY,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
 };
 use windows_sys::Win32::System::Threading::{
@@ -162,21 +163,19 @@ fn create_job(cap_bytes: u64) -> io::Result<Owned> {
         let job = Owned(job);
 
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY
-            | JOB_OBJECT_LIMIT_JOB_MEMORY
-            | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            | 0x0000_0400; // JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
-        let min_proc: u64 = 512 * 1024 * 1024;
-        let two_thirds = (cap_bytes * 2) / 3;
-        let proc_cap = if cap_bytes <= min_proc {
-            cap_bytes
-        } else if two_thirds > min_proc {
-            two_thirds
+        let min_proc: u64 = 600 * 1024 * 1024;
+        if cap_bytes <= min_proc {
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY
+                | JOB_OBJECT_LIMIT_JOB_MEMORY
+                | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                | 0x0000_0400;
+            info.ProcessMemoryLimit = cap_bytes as usize;
+            info.JobMemoryLimit = cap_bytes as usize;
         } else {
-            min_proc
-        };
-        info.ProcessMemoryLimit = proc_cap as usize;
-        info.JobMemoryLimit = cap_bytes as usize;
+            info.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            info.JobMemoryLimit = cap_bytes as usize;
+        }
 
         check(SetInformationJobObject(
             job.raw(),
@@ -184,6 +183,20 @@ fn create_job(cap_bytes: u64) -> io::Result<Owned> {
             &info as *const _ as *const c_void,
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         ))?;
+
+        let mut ui_flags: u32 = 0x01 | 0x08 | 0x10 | 0x20 | 0x80;
+        if std::env::var_os("HERMESBOX_ISOLATE_CLIPBOARD").is_some() {
+            ui_flags |= 0x02 | 0x04;
+        }
+        let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+            UIRestrictionsClass: ui_flags,
+        };
+        let _ = SetInformationJobObject(
+            job.raw(),
+            JobObjectBasicUIRestrictions,
+            &ui as *const _ as *const c_void,
+            std::mem::size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+        );
 
         Ok(job)
     }
@@ -240,17 +253,48 @@ fn to_wide(s: &OsStr) -> Vec<u16> {
 }
 
 fn build_env_block(overrides: &[(OsString, OsString)]) -> Vec<u16> {
-    let mut entries: Vec<(OsString, OsString)> = std::env::vars_os()
+    const SAFE_KEYS: &[&str] = &[
+        "SystemRoot",
+        "windir",
+        "ComSpec",
+        "SystemDrive",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "CommonProgramFiles",
+        "CommonProgramFiles(x86)",
+        "CommonProgramW6432",
+        "ProgramData",
+        "ALLUSERSPROFILE",
+        "PUBLIC",
+        "PATHEXT",
+        "OS",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_IDENTIFIER",
+        "PROCESSOR_LEVEL",
+        "PROCESSOR_REVISION",
+        "NUMBER_OF_PROCESSORS",
+        "COMPUTERNAME",
+    ];
+
+    let mut entries: Vec<(OsString, OsString)> = SAFE_KEYS
+        .iter()
+        .filter_map(|k| std::env::var_os(k).map(|v| (OsString::from(*k), v)))
         .filter(|(k, _)| {
             let ks = k.to_string_lossy();
-            if ks.starts_with('=') {
-                return false;
-            }
             !overrides
                 .iter()
                 .any(|(ok, _)| ok.to_string_lossy().eq_ignore_ascii_case(&ks))
         })
         .collect();
+
+    let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| String::from(r"C:\Windows"));
+    let clean_path = format!(
+        r"{sr}\System32;{sr};{sr}\System32\Wbem;{sr}\System32\WindowsPowerShell\v1.0",
+        sr = sys_root
+    );
+    entries.push((OsString::from("PATH"), OsString::from(clean_path)));
+    entries.push((OsString::from("USERNAME"), OsString::from("HermesBox")));
     entries.extend(overrides.iter().cloned());
     entries.sort_by(|a, b| {
         a.0.to_string_lossy()

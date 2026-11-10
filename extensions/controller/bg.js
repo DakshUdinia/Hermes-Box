@@ -21,7 +21,7 @@ async function applyInitState() {
           try { await chrome.management.setEnabled(ext.id, true); } catch (e) {}
         }
       }
-      if (ext.id === VPN_ID || ext.name.toLowerCase().includes('1click') || ext.name.toLowerCase().includes('vpn')) {
+      if (ext.id === VPN_ID) {
         if (typeof cfg.vpn === 'boolean' && ext.enabled !== cfg.vpn) {
           await chrome.management.setEnabled(ext.id, cfg.vpn);
         }

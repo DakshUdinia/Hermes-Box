@@ -1,6 +1,6 @@
 //! Sandbox directory lifecycle: create, list, wipe.
 //!
-//! A box lives under `%LOCALAPPDATA%\Hermes\boxes\<id>` by default. The tree is
+//! A box lives under `%LOCALAPPDATA%\HermesBox\boxes\<id>` by default. The tree is
 //! labelled Low integrity (via icacls) so the low-integrity child can write inside
 //! it, while everything outside stays off-limits.
 

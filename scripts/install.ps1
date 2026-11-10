@@ -88,8 +88,7 @@ $nhManifest = @{
     path = (Join-Path $bin 'native-host.cmd')
     type = 'stdio'
     allowed_origins = @(
-        'chrome-extension://nikijleckkplefnahnnjhlojmhjihlnb/',
-        'chrome-extension://ajjibhjidlpbekdkdkkifhkiiibmkdnj/'
+        'chrome-extension://nikijleckkplefnahnnjhlojmhjihlnb/'
     )
 } | ConvertTo-Json -Depth 4
 Set-Content -LiteralPath $nhManifestPath -Value $nhManifest -Encoding ASCII
@@ -105,8 +104,14 @@ foreach ($regKey in @(
 }
 
 # Deploy bundled sandbox extensions (controller, ublock, vpn) into C:\ProgramData\HermesBox\extensions
+# Strip inherited C:\ProgramData Users:(WD,AD) write permissions so sandbox processes can NEVER tamper with extensions.
+$sharedBaseRoot = 'C:\ProgramData\HermesBox'
 $sharedExtRoot = 'C:\ProgramData\HermesBox\extensions'
-New-Item -ItemType Directory -Force -Path $sharedExtRoot | Out-Null
+$sharedBoxesRoot = 'C:\ProgramData\HermesBox\boxes'
+New-Item -ItemType Directory -Force -Path $sharedBaseRoot, $sharedExtRoot, $sharedBoxesRoot | Out-Null
+$callerId = "$env:USERDOMAIN\$env:USERNAME"
+icacls.exe $sharedBaseRoot /inheritance:r /remove:g 'HermesBox' /grant '*S-1-5-18:(OI)(CI)(F)' /grant '*S-1-5-32-544:(OI)(CI)(F)' /grant "${callerId}:(OI)(CI)(F)" /grant '*S-1-5-32-545:(RX)' /Q 2>$null | Out-Null
+icacls.exe $sharedBoxesRoot /inheritance:r /remove:g 'HermesBox' /grant '*S-1-5-18:(OI)(CI)(F)' /grant '*S-1-5-32-544:(OI)(CI)(F)' /grant "${callerId}:(OI)(CI)(F)" /grant '*S-1-5-32-545:(RX)' /Q 2>$null | Out-Null
 foreach ($extName in @('controller', 'ublock', 'vpn')) {
     $extSrc = if ($repoRoot) { Join-Path $repoRoot "extensions\$extName" } else { $null }
     if ($extSrc -and (Test-Path -LiteralPath $extSrc)) {
@@ -117,8 +122,9 @@ foreach ($extName in @('controller', 'ublock', 'vpn')) {
         Copy-Item -LiteralPath $extSrc -Destination $extDst -Recurse -Force
     }
 }
-icacls.exe $sharedExtRoot /grant '*S-1-5-32-545:(OI)(CI)(RX)' /grant '*S-1-5-32-545:(RX)' /T /Q 2>$null | Out-Null
-Write-Host '[1/4] Deployed bundled sandbox extensions (uBlock Origin, 1ClickVPN Proxy, Control Center).' -ForegroundColor Green
+icacls.exe $sharedExtRoot /inheritance:r /remove:g 'HermesBox' /grant '*S-1-5-18:(OI)(CI)(F)' /grant '*S-1-5-32-544:(OI)(CI)(F)' /grant "${callerId}:(OI)(CI)(F)" /grant '*S-1-5-32-545:(OI)(CI)(RX)' /Q 2>$null | Out-Null
+icacls.exe "$sharedExtRoot\*" /reset /T /Q 2>$null | Out-Null
+Write-Host '[1/4] Deployed & read-only locked bundled sandbox extensions (uBlock Origin, 1ClickVPN Proxy, Control Center).' -ForegroundColor Green
 
 $compDst = Join-Path $homeDir 'companion-extension'
 if ($repoRoot -and (Test-Path -LiteralPath (Join-Path $repoRoot 'extensions\companion'))) {
