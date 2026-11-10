@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Hermes Box — Send Tabs to Sandbox",
+  "version": "1.0.0",
+  "description": "Select open tabs or links in Google Chrome (or any Chromium browser) and launch them inside the isolated Hermes Box disposable sandbox.",
+  "permissions": [
+    "tabs",
+    "contextMenus",
+    "nativeMessaging",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "bg.js"
+  },
+  "action": {
+    "default_title": "Hermes Box — Disposable Browser Sandbox",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvCBjpr4VycXF1M4Oc3t7sz3qeqaJiIgk19w9TQ/KUPw8IgahHYRLjHVemkiEsraMLBvuqUrrKCTOP65WScpb0FZ3rmAE5Z5JBIwXLuOkTAO9Ey2MEgspHaY14GGCK7oKvFBACH7qxbMmjia+P6BxlkFLcQ9fuTPWlUSERjrD423iDK92kLSKfS/bSScnGpzaS73Qg2c5JQv377KdyBmbR2PqlIMWG1aK1W5VzrS635r3RuVXIdlnE+yRWISibGwxtzWck12YdhnrbsvKAVZ6eoM8NBEqLSh5oH+/D2JkQMbmOhrgejpQgRAY/APSS9cFvFoU3ZbJQOt6IsNk9AR0JQIDAQAB"
+}

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  body {
+    width: 300px; background: #0f111a; color: #e2e8f0;
+    font-family: 'Segoe UI', system-ui, sans-serif; padding: 14px; margin: 0;
+  }
+  h3 { margin: 0 0 10px 0; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+  .badge { font-size: 11px; background: rgba(16,185,129,0.2); color: #10b981; padding: 3px 8px; border-radius: 99px; }
+  .row {
+    display: flex; justify-content: space-between; align-items: center;
+    background: #181c2a; padding: 10px 12px; border-radius: 8px; margin-bottom: 8px;
+  }
+  .label { font-size: 13px; font-weight: 600; }
+  .sub { font-size: 11px; color: #94a3b8; }
+  button {
+    border: none; border-radius: 7px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .on { background: #10b981; color: #052e16; }
+  .off { background: #334155; color: #cbd5e1; }
+  .full { width: 100%; padding: 9px; margin-top: 6px; color: #fff; }
+  .indigo { background: #6366f1; }
+  .red { background: #ef4444; }
+</style>
+</head>
+<body>
+  <h3><span>🛡️ Hermes Box</span><span class="badge">Isolated</span></h3>
+  <div class="row">
+    <div><div class="label">uBlock Origin</div><div class="sub" id="ubSub">Adblocker</div></div>
+    <button id="ubBtn" class="on">ON</button>
+  </div>
+  <div class="row">
+    <div><div class="label">1ClickVPN Proxy</div><div class="sub" id="vpnSub">Free VPN (No Signup)</div></div>
+    <button id="vpnBtn" class="on">ON</button>
+  </div>
+  <button id="dashBtn" class="full indigo">Open Sandbox Dashboard Tab</button>
+  <button id="panicBtn" class="full red">☢️ Panic Close & Wipe Sandbox</button>
+  <script src="popup.js"></script>
+</body>
+</html>

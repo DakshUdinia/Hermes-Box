@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Hermes Box Control Center",
+  "version": "1.0.0",
+  "description": "In-browser sandbox controller: toggle Urban VPN & uBlock Origin, launch selective multi-tabs, and panic-wipe.",
+  "permissions": [
+    "management",
+    "tabs",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "bg.js"
+  },
+  "action": {
+    "default_title": "Hermes Box Controls (VPN / Adblock / Panic Wipe)",
+    "default_popup": "popup.html"
+  },
+  "chrome_url_overrides": {
+    "newtab": "dashboard.html"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArp3PHr4OifUqjOo1tleHrzwRFHDz5NQejJ35ucBFyVjzaTtnfOd7pZjfnDP9MfPz4qO05DGOj+2/EiRcT/ibyfSeXT9Qi6Zr6Ux7QgED5t2gvyjXzLuMQ4LKEXBTKqajX20Q0XPVvhJEuvmqIpHxx3KUaWXXQUMFQbQTiVsFzpI5oP/PboiMFBMyOO6LptFwo4JblYTacmLCSNnzoYj9/d/sl0PWXdC7eLKI7I3wWLq0W/D04lLaEAjDgzaOUSDLGMRU8A4t2YXZiYtQKfxPlWupdLCGi4ZmlHiYQcG/CeOFGRHLJtlrD+13vcNv6HlaRtnYVwBFd7mOWalhe8Z0xQIDAQAB"
+}

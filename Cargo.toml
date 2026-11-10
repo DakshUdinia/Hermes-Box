@@ -1,0 +1,25 @@
+[package]
+name = "hermesbox"
+version = "0.1.0"
+edition = "2021"
+description = "Hermes Box - a featherweight, disposable Chromium sandbox for Windows Home"
+license = "MIT"
+
+[[bin]]
+name = "hermes"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+] }

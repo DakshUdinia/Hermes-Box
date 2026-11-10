@@ -1,0 +1,104 @@
+{
+  "update_url": "https://clients2.google.com/service/update2/crx",
+  "name": "1ClickVPN Proxy for Chrome",
+  "description": "Get the best secured Free VPN extension for Chrome by 1Click VPN",
+  "manifest_version": 3,
+  "minimum_chrome_version": "110.0",
+  "default_locale": "en",
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "action": {
+    "default_icon": "icons/extension/icon_16.png",
+    "default_title": "1ClickVPN",
+    "default_popup": "popup/index.html"
+  },
+  "icons": {
+    "16": "icons/extension/icon_16.png",
+    "48": "icons/extension/icon_48.png",
+    "128": "icons/extension/icon_128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*",
+        "http://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*/*",
+        "http://*/*"
+      ],
+      "js": [
+        "ad-blocker/content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "permissions": [
+    "webRequest",
+    "proxy",
+    "management",
+    "alarms",
+    "storage",
+    "offscreen",
+    "webRequestAuthProvider",
+    "tabs",
+    "webNavigation",
+    "scripting"
+  ],
+  "optional_permissions": [
+    "privacy"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://*.bugsnag.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "/content/location/location.js"
+      ],
+      "matches": [
+        "https://*/*",
+        "http://*/*"
+      ]
+    },
+    {
+      "resources": [
+        "/content/anti-malware-notification/index.html",
+        "/content/terminated-connection-notification/index.html",
+        "/content/safe-price-notification/index.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    },
+    {
+      "resources": [
+        "/libs/extend-native-history-api.js",
+        "/libs/requests.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    },
+    {
+      "resources": [
+        "executors/*"
+      ],
+      "matches": [
+        "*://*/*"
+      ]
+    }
+  ],
+  "version": "1.18.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvrJufu3MDfQGInM1YGrlJHQ1z1Tbjv6/ZGCp8vkLB/sM4VqF++ELRcyKAI9rbWZ2lb9bfdqn18l0wXDFqZlVLcLsU9Rnl8lY7BYpcooh2+cqmDVe2r5AadUWOAccODmN2jzGyLYt1JnGVIe7Fvvp2h7FrP2KUHfDn/c/tluFKjKhZ7LEXJZVR8NP9wHjK6Q2BB9EIT8nvtjtzMXFw1aZ+OdHdQHpINIaXDnReOdb1kjxDntaM+X+CXWpKaHl55KG7UKyRJ0+mpqOhp07dofSA0q6xYU3j0rOc/Xj+5CEeu5Ibgv7ESG9Jkt1Lz/GI8J0qxahqt1cHmGx8sga5wsm/QIDAQAB"
+}
