@@ -836,7 +836,7 @@ function Initialize-BrowserProfile([string]$root, [string]$downloadsDir, [string
             }
         }
     }
-    if ($startupUrls -and $startupUrls.Count -gt 1) {
+    if ($startupUrls -and $startupUrls.Count -ge 1) {
         $prefs['session'] = @{
             restore_on_startup = 4
             startup_urls = @($startupUrls)
@@ -925,31 +925,26 @@ function Get-BrowserArgs([string]$root, [string]$page, [string[]]$pageList, [str
     $v8Mb = 256
     $isEdge = ($exePath -match 'msedge\.exe$')
     $disFeatures = if ($isEdge) {
-        'Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,msEdgeSidebarV2,msHubApps'
+        'Translate,MediaRouter,OptimizationHints,msEdgeSidebarV2,msHubApps'
     } else {
-        'Translate,MediaRouter,OptimizationHints,AutofillServerCommunication,ChromeWhatsNewUI,PrivacySandboxSettings4,SidePanelPinning,LensOverlay,Compose'
+        'Translate,MediaRouter,OptimizationHints,ChromeWhatsNewUI,PrivacySandboxSettings4,LensOverlay,Compose'
     }
     $a = @(
         "--user-data-dir=$profile"
         "--disk-cache-dir=$cache"
         '--disk-cache-size=104857600'
         '--media-cache-size=134217728'
-        '--site-per-process'
+        '--disable-quic'
         '--no-first-run'
         '--no-default-browser-check'
         '--disable-breakpad'
         '--disable-sync'
         '--disable-default-apps'
-        '--disable-domain-reliability'
-        '--metrics-recording-only'
         '--no-pings'
-        '--no-service-autorun'
-        '--password-store=basic'
         '--force-dark-mode'
         '--enable-gpu-rasterization'
         '--enable-zero-copy'
-        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'
-        '--enable-features=UseEcoQoSForBackgroundProcess,HighEfficiencyModeAvailable,HttpsUpgrades'
+        '--enable-features=UseEcoQoSForBackgroundProcess'
         "--disable-features=$disFeatures"
     )
     if ($isLowRam) {
@@ -974,11 +969,8 @@ function Get-BrowserArgs([string]$root, [string]$page, [string[]]$pageList, [str
     $allPages = @()
     if ($page) { $allPages += $page }
     if ($pageList -and $pageList.Count -gt 0) { $allPages += $pageList }
-    if ($allPages.Count -eq 1 -and $allPages[0].Length -le 220) {
-        $a += $allPages[0]
-    }
-    elseif ($allPages.Count -gt 1) {
-        # Multiple tabs are already pre-seeded via Preferences (session.startup_urls) so none get dropped or hit the 1024-char RPC limit.
+    if ($allPages.Count -ge 1) {
+        # Startup URL(s) are pre-seeded in Preferences (session.startup_urls) so long URLs never hit the 1024-char RPC limit.
     }
     else {
         $a += 'chrome://newtab'
