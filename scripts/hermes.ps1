@@ -525,6 +525,32 @@ function Sync-PerUserBrowser([string]$srcExe, [string]$engineTag = 'Chrome') {
         return $srcExe
     }
 
+    # Ensure the source Application directory carries an inheritable BUILTIN\Users:(OI)(CI)(RX) ACE
+    # and that leaf files have inheritance enabled. Because NTFS hardlinks share the source MFT
+    # inode security descriptor, inheriting (RX) from $srcRoot keeps all version manifests
+    # (<ver>\<ver>.manifest) and chrome.dll readable by the HermesBox account across background
+    # browser auto-updates without stripping user/SYSTEM FullControl or LPAC capability SIDs.
+    try {
+        $usersSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')
+        $srcAcl = Get-Acl -LiteralPath $srcRoot
+        $hasUsersRx = $false
+        foreach ($r in $srcAcl.Access) {
+            if ($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-32-545' -and
+                $r.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+                (($r.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadAndExecute) -eq [System.Security.AccessControl.FileSystemRights]::ReadAndExecute) -and
+                $r.InheritanceFlags -ne [System.Security.AccessControl.InheritanceFlags]::None) {
+                $hasUsersRx = $true
+                break
+            }
+        }
+        if (-not $hasUsersRx) {
+            Start-Process -FilePath 'icacls.exe' -ArgumentList @($srcRoot, '/grant', '*S-1-5-32-545:(OI)(CI)(RX)', '/Q') -Wait -WindowStyle Hidden | Out-Null
+        }
+        if ((Get-Acl -LiteralPath $srcExe).AreAccessRulesProtected) {
+            Start-Process -FilePath 'icacls.exe' -ArgumentList @("$srcRoot\*", '/inheritance:e', '/T', '/Q') -Wait -WindowStyle Hidden | Out-Null
+        }
+    } catch { }
+
     $dstRoot = Join-Path $script:SharedBase "engine\$engineTag"
     $dstExe = Join-Path $dstRoot $leafExe
     $needsSync = $true
@@ -534,15 +560,43 @@ function Sync-PerUserBrowser([string]$srcExe, [string]$engineTag = 'Chrome') {
         if ($sItem.Length -eq $dItem.Length -and $sItem.LastWriteTimeUtc -eq $dItem.LastWriteTimeUtc) {
             $needsSync = $false
         }
+        if (-not $needsSync) {
+            $srcVers = @(Get-ChildItem -LiteralPath $srcRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d+\.' })
+            foreach ($v in $srcVers) {
+                $dstManifest = Join-Path $dstRoot "$($v.Name)\$($v.Name).manifest"
+                $dstDll = Join-Path $dstRoot "$($v.Name)\chrome.dll"
+                if (-not (Test-Path -LiteralPath $dstManifest -PathType Leaf) -or -not (Test-Path -LiteralPath $dstDll -PathType Leaf)) {
+                    $needsSync = $true
+                    break
+                }
+            }
+        }
     }
     if ($needsSync) {
         if (Test-Path -LiteralPath $dstRoot) {
+            Start-Process -FilePath 'icacls.exe' -ArgumentList @("$dstRoot\*", '/inheritance:e', '/T', '/Q') -Wait -WindowStyle Hidden | Out-Null
             Remove-Item -LiteralPath $dstRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
         New-Item -ItemType Directory -Force -Path $dstRoot | Out-Null
+
+        # Set read-only container DACL on the empty $dstRoot directory (NO /T) BEFORE creating
+        # subdirectories and hardlinks so directories do not inherit C:\ProgramData's
+        # BUILTIN\Users:(CI)(WD,AD), while never stripping permissions from hardlinked files.
+        $callerId = "$env:USERDOMAIN\$env:USERNAME"
+        Start-Process -FilePath 'icacls.exe' -ArgumentList @(
+            $dstRoot, '/inheritance:r', '/remove:g', 'HermesBox',
+            '/grant', '*S-1-5-18:(OI)(CI)(F)',
+            '/grant', '*S-1-5-32-544:(OI)(CI)(F)',
+            '/grant', "${callerId}:(OI)(CI)(F)",
+            '/grant', '*S-1-5-32-545:(OI)(CI)(RX)',
+            '/Q'
+        ) -Wait -WindowStyle Hidden | Out-Null
+
+        $skipNames = @('debug.log', 'SetupMetrics', 'new_chrome.exe', 'new_chrome_proxy.exe', 'old_chrome.exe')
         Get-ChildItem -LiteralPath $srcRoot -Recurse -Force | ForEach-Object {
-            if ($_.Name -eq 'debug.log') { return }
             $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('\')
+            $topSeg = ($rel -split '\\')[0]
+            if ($skipNames -contains $_.Name -or $skipNames -contains $topSeg) { return }
             $target = Join-Path $dstRoot $rel
             if ($_.PSIsContainer) {
                 New-Item -ItemType Directory -Force -Path $target | Out-Null
@@ -555,16 +609,6 @@ function Sync-PerUserBrowser([string]$srcExe, [string]$engineTag = 'Chrome') {
                 New-Item -ItemType HardLink -Path $target -Value $_.FullName -Force | Out-Null
             }
         }
-        $callerId = "$env:USERDOMAIN\$env:USERNAME"
-        $p = Start-Process -FilePath 'icacls.exe' -ArgumentList @(
-            $dstRoot, '/inheritance:r',
-            '/grant', '*S-1-5-18:(OI)(CI)(F)',
-            '/grant', '*S-1-5-32-544:(OI)(CI)(F)',
-            '/grant', "${callerId}:(OI)(CI)(F)",
-            '/grant', '*S-1-5-32-545:(OI)(CI)(RX)',
-            '/grant', '*S-1-5-32-545:(RX)',
-            '/T', '/Q'
-        ) -Wait -PassThru -WindowStyle Hidden
     }
     return $dstExe
 }
